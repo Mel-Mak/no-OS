@@ -1,0 +1,65 @@
+
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * CN0566 (ADALM-PHASER) device tree overlay for No-OS userspace access.
+ *
+ * Mirrors the hardware topology of rpi-cn0566-overlay.dts but uses spidev
+ * compatible strings so devices remain accessible from userspace (No-OS)
+ * instead of being claimed by kernel drivers.
+ *
+ * Usage:
+ *   dtc -@ -I dts -O dtb -o rpi-cn0566-noos.dtbo rpi-cn0566-noos-overlay.dts
+ *   sudo cp rpi-cn0566-noos.dtbo /boot/overlays/
+ *   # Add to /boot/config.txt:  dtoverlay=rpi-cn0566-noos
+ *   sudo reboot
+ *
+ * After reboot: /dev/spidev0.0 (ADAR1000 #0), spidev0.1 (ADAR1000 #1),
+ *               spidev0.2 (ADF4159)
+ */
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2836", "brcm,bcm2835", "brcm,bcm2709";
+
+	/* SPI0 chip-select pin configuration: CE0=GPIO8, CE1=GPIO7, CE2=GPIO27 */
+	fragment@0 {
+		target = <&spi0_cs_pins>;
+		__overlay__ {
+			brcm,pins = <8 7 27>;
+			brcm,function = <1>;
+		};
+	};
+
+	/* SPI0 bus with three spidev devices matching CN0566 hardware */
+	fragment@1 {
+		target = <&spi0>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			cs-gpios = <&gpio 8 1>, <&gpio 7 1>, <&gpio 27 1>;
+			status = "okay";
+
+			/* CS0 = GPIO8 -> ADAR1000 beamformer #0 */
+			spidev@0 {
+				compatible = "spidev";
+				reg = <0>;
+				spi-max-frequency = <3600000>;
+			};
+
+			/* CS1 = GPIO7 -> ADAR1000 beamformer #1 */
+			spidev@1 {
+				compatible = "spidev";
+				reg = <1>;
+				spi-max-frequency = <3600000>;
+			};
+
+			/* CS2 = GPIO27 -> ADF4159 PLL synthesizer (LE) */
+			spidev@2 {
+				compatible = "spidev";
+				reg = <2>;
+				spi-max-frequency = <3600000>;
+			};
+		};
+	};
+};
