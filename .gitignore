@@ -41,3 +41,4 @@ __pycache__/
 
 local_variables.mk
 *generated*
+*.dtbo
