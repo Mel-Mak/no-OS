@@ -205,22 +205,6 @@ int main(void)
 		printf("ADF4159 initialized on SPI-%d, LE=CS%d (hardware-managed)\n",
 		       ADF4159_SPI_DEVICE, ADF4159_SPI_CS);
 
-	// uint8_t muxout_val;
-	// no_os_gpio_get_value(gpio_muxout, &muxout_val);
-	// printf("  MUXOUT (lock detect): %d (%s)\n",
-	//        muxout_val, muxout_val ? "LOCKED" : "UNLOCKED");
-
-	// /* ---- GPIO pin function check ---- */
-	// printf("\n--- GPIO PIN CHECK ---\n");
-	// printf("GPIO 27 (LE/CS2) and GPIO 25 (MUXOUT):\n");
-	// system("raspi-gpio get 27");
-	// system("raspi-gpio get 25");
-	// if (ADF4159_GPIO_LE < 0)
-	// 	printf("GPIO 27 should show ALT0/SPI0_CE2_N (hardware-managed LE via overlay).\n");
-	// else
-	// 	printf("GPIO 27 should show func=OUTPUT (manual LE toggle via GPIO).\n");
-	// printf("--- END GPIO PIN CHECK ---\n");
-
 	/* ---- Initial monitor readings ---- */
 	printf("\nInitial monitor readings:\n");
 	for (ch = 0; ch < AD7291_NUM_CHANNELS; ch++) {
@@ -236,73 +220,6 @@ int main(void)
 		       (int)(scaled_mv % 1000));
 	}
 
-	/* ---- MUXOUT latch test: proves ADF4159 is receiving data ---- */
-	// printf("\n--- MUXOUT LATCH TEST ---\n");
-	// {
-	// 	uint32_t r0_save = pll_dev->st.regs[ADF4159_REG0];
-
-	// 	/* Force MUXOUT = DVDD (should read 1) */
-	// 	uint32_t r0_dvdd = (r0_save & ~ADF4159_REG0_MUXOUT_MASK) |
-	// 			   ADF4159_REG0_MUXOUT(ADF4159_MUXOUT_DVDD);
-	// 	adf4159_write(pll_dev, r0_dvdd | ADF4159_REG0);
-	// 	no_os_mdelay(10);
-	// 	no_os_gpio_get_value(gpio_muxout, &muxout_val);
-	// 	printf("MUXOUT=DVDD -> libgpiod=%d, ", muxout_val);
-	// 	system("raspi-gpio get 25");
-
-	// 	/* Force MUXOUT = DGND (should read 0) */
-	// 	uint32_t r0_dgnd = (r0_save & ~ADF4159_REG0_MUXOUT_MASK) |
-	// 			   ADF4159_REG0_MUXOUT(ADF4159_MUXOUT_DGND);
-	// 	adf4159_write(pll_dev, r0_dgnd | ADF4159_REG0);
-	// 	no_os_mdelay(10);
-	// 	no_os_gpio_get_value(gpio_muxout, &muxout_val);
-	// 	printf("MUXOUT=DGND -> libgpiod=%d, ", muxout_val);
-	// 	system("raspi-gpio get 25");
-
-	// 	/* Restore original MUXOUT */
-	// 	adf4159_write(pll_dev, r0_save | ADF4159_REG0);
-	// 	no_os_mdelay(10);
-	// 	no_os_gpio_get_value(gpio_muxout, &muxout_val);
-	// 	printf("MUXOUT=restored -> libgpiod=%d, ", muxout_val);
-	// 	system("raspi-gpio get 25");
-	// }
-	// printf("If DVDD=1 and DGND=0, ADF4159 IS latching register writes.\n");
-	// printf("--- END MUXOUT LATCH TEST ---\n");
-
-	/* ---- SPI link diagnostic: toggle PLL power-down ---- */
-	// printf("\n--- SPI LINK TEST ---\n");
-	// ret = adf4159_set_freq(pll_dev, 2625000000ULL);
-	// printf("Set PLL to 2625 MHz (10.5 GHz LO), ret=%d\n", ret);
-	// no_os_mdelay(500);
-	// ret = ad7291_read_channel_voltage(adc_dev, VTUNE_CHANNEL, &millivolts);
-	// scaled_mv = millivolts * ch_scale_x1000[VTUNE_CHANNEL] / 1000;
-	// no_os_gpio_get_value(gpio_muxout, &muxout_val);
-	// printf("VTune (PLL active):      %d.%03d V  MUXOUT=%d\n",
-	//        (int)(scaled_mv / 1000), (int)(scaled_mv % 1000), muxout_val);
-
-	// /* Power down the PLL: set PD bit in R3 */
-	// pll_dev->st.regs[ADF4159_REG3] |= ADF4159_REG3_PD(1);
-	// adf4159_write(pll_dev, pll_dev->st.regs[ADF4159_REG3] | ADF4159_REG3);
-	// printf("Wrote R3 with PD=1 (power down)\n");
-	// no_os_mdelay(500);
-	// ret = ad7291_read_channel_voltage(adc_dev, VTUNE_CHANNEL, &millivolts);
-	// scaled_mv = millivolts * ch_scale_x1000[VTUNE_CHANNEL] / 1000;
-	// no_os_gpio_get_value(gpio_muxout, &muxout_val);
-	// printf("VTune (PLL powered down): %d.%03d V  MUXOUT=%d\n",
-	//        (int)(scaled_mv / 1000), (int)(scaled_mv % 1000), muxout_val);
-
-	/* Power back up: clear PD bit */
-	// pll_dev->st.regs[ADF4159_REG3] &= ~ADF4159_REG3_PD(1);
-	// adf4159_write(pll_dev, pll_dev->st.regs[ADF4159_REG3] | ADF4159_REG3);
-	// printf("Wrote R3 with PD=0 (power up)\n");
-	// no_os_mdelay(500);
-	// ret = ad7291_read_channel_voltage(adc_dev, VTUNE_CHANNEL, &millivolts);
-	// scaled_mv = millivolts * ch_scale_x1000[VTUNE_CHANNEL] / 1000;
-	// no_os_gpio_get_value(gpio_muxout, &muxout_val);
-	// printf("VTune (PLL restored):    %d.%03d V  MUXOUT=%d\n",
-	//        (int)(scaled_mv / 1000), (int)(scaled_mv % 1000), muxout_val);
-	// printf("--- END SPI LINK TEST ---\n");
-	// printf("If all three VTune readings are identical, SPI data is NOT reaching the ADF4159.\n\n");
 
 	/* ---- VTune sweep ---- */
 	printf("\nSweeping PLL from %llu to %llu Hz (LO %.1f to %.1f GHz)...\n",
@@ -331,7 +248,6 @@ int main(void)
 		}
 
 		scaled_mv = millivolts * ch_scale_x1000[VTUNE_CHANNEL] / 1000;
-		// no_os_gpio_get_value(gpio_muxout, &muxout_val);
 		printf("  %.2f GHz -> VTune = %d.%03d V  \n",
 		       signal_freq / 1e9,
 		       (int)(scaled_mv / 1000),
