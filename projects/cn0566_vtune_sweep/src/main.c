@@ -36,6 +36,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "ad7291.h"
 #include "adf4159.h"
 #include "adf4159_cfg.h"
@@ -44,7 +45,23 @@
 #include "no_os_spi.h"
 #include "no_os_gpio.h"
 #include "parameters.h"
-#include <string.h>
+
+enum run_mode {
+	MODE_SWEEP,
+	MODE_FIXED,
+};
+
+static void print_usage(const char *prog)
+{
+	printf("Usage: %s [OPTIONS]\n\n", prog);
+	printf("Options:\n");
+	printf("  --sweep              Sweep across frequencies (default)\n");
+	printf("  --fixed <freq_ghz>   Set a single frequency and read VTune once\n");
+	printf("  --help               Show this help message\n");
+	printf("\nExamples:\n");
+	printf("  %s --sweep\n", prog);
+	printf("  %s --fixed 10.5\n", prog);
+}
 
 /* CN0566 resistor-divider scale factors (x1000 for integer math).
  * VTune is channel 7: 1 + 69.8k/10k = 7.98 */
@@ -70,16 +87,17 @@ static const char *ch_labels[] = {
 	"VTUNE  ",
 };
 
-/* Sweep: ADF4159 output in Hz (LO = PLL freq * 4) */
-#define SDR_RX_LO_HZ     2000000000ULL
-#define SIGNAL_START_HZ   9500000000ULL
-#define SIGNAL_STOP_HZ   12500000000ULL
-#define SIGNAL_STEP_HZ    100000000ULL
-#define SETTLE_MS	500
+/* Sweep in signal frequency (matches Python convention).
+ * PLL freq = (signal_freq + SDR_RX_LO) / 4 */
+#define SDR_RX_LO_HZ		2000000000ULL
+#define SIGNAL_START_HZ		9500000000ULL
+#define SIGNAL_STOP_HZ		12500000000ULL
+#define SIGNAL_STEP_HZ		100000000ULL
+#define SETTLE_MS		500
 
 #define VTUNE_CHANNEL	7
 
-int main(void)
+int main(int argc, char *argv[])
 {
 	struct ad7291_desc *adc_dev;
 	struct adf4159_dev *pll_dev;
@@ -87,8 +105,37 @@ int main(void)
 	int32_t scaled_mv;
 	uint8_t ch;
 	uint64_t pll_freq_hz;
+	uint64_t signal_freq;
 	int ret;
-	u_int64_t signal_freq;
+	enum run_mode mode = MODE_SWEEP;
+	double fixed_freq_ghz = 0.0;
+
+	/* Parse command-line arguments */
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--help") == 0) {
+			print_usage(argv[0]);
+			return 0;
+		} else if (strcmp(argv[i], "--sweep") == 0) {
+			mode = MODE_SWEEP;
+		} else if (strcmp(argv[i], "--fixed") == 0) {
+			if (i + 1 >= argc) {
+				printf("Error: --fixed requires a frequency in GHz\n");
+				print_usage(argv[0]);
+				return -1;
+			}
+			mode = MODE_FIXED;
+			fixed_freq_ghz = strtod(argv[++i], NULL);
+			if (fixed_freq_ghz <= 0.0) {
+				printf("Error: invalid frequency '%.3f' GHz\n",
+				       fixed_freq_ghz);
+				return -1;
+			}
+		} else {
+			printf("Unknown option: %s\n", argv[i]);
+			print_usage(argv[0]);
+			return -1;
+		}
+	}
 
 	/* ---- AD7291 init (I2C) ---- */
 	struct linux_i2c_init_param linux_i2c_extra = {
@@ -169,7 +216,7 @@ int main(void)
 	/* ---- ADF4159 init (SPI + GPIO) ----
 	 * Board GPIOs are already configured (matching Linux probe order).
 	 * adf4159_init() calls adf4159_setup() which writes all registers
-	 * R7?R0 (including SEL1 variants) and programs the power-up frequency.
+	 * R7-R0 (including SEL1 variants) and programs the power-up frequency.
 	 */
 	struct adf4159_init_param pll_init = {
 		.spi_init = {
@@ -221,20 +268,18 @@ int main(void)
 	}
 
 
-	/* ---- VTune sweep ---- */
-	printf("\nSweeping PLL from %llu to %llu Hz (LO %.1f to %.1f GHz)...\n",
-	       (unsigned long long)SIGNAL_START_HZ,
-	       (unsigned long long)SIGNAL_STOP_HZ, SIGNAL_START_HZ,
-	       SIGNAL_STOP_HZ * 4.0 / 1e9);
 
-	for (signal_freq = SIGNAL_START_HZ; signal_freq <= SIGNAL_STOP_HZ;
-     signal_freq += SIGNAL_STEP_HZ) {
+	if (mode == MODE_FIXED) {
+		/* ---- Fixed frequency mode ---- */
+		signal_freq = (uint64_t)(fixed_freq_ghz * 1e9);
 		pll_freq_hz = (signal_freq + SDR_RX_LO_HZ) / 4;
+		printf("\nSetting signal frequency to %.3f GHz (PLL = %.3f GHz)...\n",
+		       fixed_freq_ghz, pll_freq_hz / 1e9);
+
 		ret = adf4159_set_freq(pll_dev, pll_freq_hz);
 		if (ret) {
-			printf("  %llu Hz -> FAILED (%d)\n",
-			       (unsigned long long)pll_freq_hz, ret);
-			continue;
+			printf("Failed to set frequency: %d\n", ret);
+			goto cleanup;
 		}
 
 		no_os_mdelay(SETTLE_MS);
@@ -242,20 +287,54 @@ int main(void)
 		ret = ad7291_read_channel_voltage(adc_dev, VTUNE_CHANNEL,
 						  &millivolts);
 		if (ret) {
-			printf("  %llu Hz -> VTune read error %d\n",
-			       (unsigned long long)pll_freq_hz, ret);
-			continue;
+			printf("VTune read error: %d\n", ret);
+			goto cleanup;
 		}
 
 		scaled_mv = millivolts * ch_scale_x1000[VTUNE_CHANNEL] / 1000;
-		printf("  %.2f GHz -> VTune = %d.%03d V  \n",
-		       signal_freq / 1e9,
+		printf("%.3f GHz: VTune = %d.%03d V\n",
+		       fixed_freq_ghz,
 		       (int)(scaled_mv / 1000),
 		       (int)(scaled_mv % 1000));
+	} else {
+		/* ---- VTune sweep ---- */
+		printf("\nSweeping signal from %.1f to %.1f GHz (RX LO = %.1f GHz)...\n",
+		       SIGNAL_START_HZ / 1e9,
+		       SIGNAL_STOP_HZ / 1e9,
+		       SDR_RX_LO_HZ / 1e9);
+		printf("# freq_GHz,vtune_V\n");
+
+		for (signal_freq = SIGNAL_START_HZ; signal_freq <= SIGNAL_STOP_HZ;
+		     signal_freq += SIGNAL_STEP_HZ) {
+			pll_freq_hz = (signal_freq + SDR_RX_LO_HZ) / 4;
+			ret = adf4159_set_freq(pll_dev, pll_freq_hz);
+			if (ret) {
+				printf("  %.2f GHz -> FAILED (%d)\n",
+				       signal_freq / 1e9, ret);
+				continue;
+			}
+
+			no_os_mdelay(SETTLE_MS);
+
+			ret = ad7291_read_channel_voltage(adc_dev, VTUNE_CHANNEL,
+							  &millivolts);
+			if (ret) {
+				printf("  %.2f GHz -> VTune read error %d\n",
+				       signal_freq / 1e9, ret);
+				continue;
+			}
+
+			scaled_mv = millivolts * ch_scale_x1000[VTUNE_CHANNEL] / 1000;
+			printf("%.2f,%d.%03d\n",
+			       signal_freq / 1e9,
+			       (int)(scaled_mv / 1000),
+			       (int)(scaled_mv % 1000));
+		}
+
+		printf("\nSweep complete.\n");
 	}
 
-	printf("\nSweep complete.\n");
-
+cleanup:
 	adf4159_remove(pll_dev);
 	for (int i = 0; i < 11; i++)
 		no_os_gpio_remove(*gpio_descs[i]);
