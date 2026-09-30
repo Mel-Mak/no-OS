@@ -19,7 +19,7 @@ the band.
 
 - Raspberry Pi OS (or equivalent) with kernel headers and `dtc` installed.
 - CMake >= 3.10 and a C compiler (`gcc`).
-- No IIO kernel drivers loaded for the ADF4159 or ADAR1000 the No-OS
+- No IIO kernel drivers loaded for the ADF4159 or ADAR1000, the No-OS
   overlay uses `spidev` so the devices stay in userspace.
 
 ## Device Tree Overlay Setup
@@ -80,47 +80,62 @@ The binary is produced at `build/cn0566_vtune_sweep`.
 
 ## Running
 
+`sudo` is required for GPIO and SPI access.
+
+### Sweep mode (default)
+
+Sweeps signal frequency from 9.5 GHz to 12.5 GHz in 100 MHz steps, reading
+VTune at each point:
+
 ```bash
 sudo ./build/cn0566_vtune_sweep
+sudo ./build/cn0566_vtune_sweep --sweep
 ```
 
-`sudo` is required for GPIO and SPI access.
+### Fixed frequency mode
+
+Sets a single frequency and reads VTune once:
+
+```bash
+sudo ./build/cn0566_vtune_sweep --fixed 10.5
+```
+
+### Help
+
+```bash
+sudo ./build/cn0566_vtune_sweep --help
+```
 
 ## Expected Output
 
-The application runs several diagnostic checks before performing the sweep:
+The application runs several diagnostic checks before the selected mode:
 
-1. **AD7291 initialization** confirms I2C communication with the voltage
+1. **AD7291 initialization** : confirms I2C communication with the voltage
    monitor.
-2. **Board GPIO setup** configures the CN0566 control signals (LO path
+2. **Board GPIO setup** : configures the CN0566 control signals (LO path
    switches, divider, TR switch).
-3. **ADF4159 initialization** programs all PLL registers via SPI.
-4. **VTune frequency sweep** sweeps signal frequency from 9.5 GHz to
-   12.5 GHz in 100 MHz steps. 
+3. **ADF4159 initialization** : programs all PLL registers via SPI.
+4. **Mode execution** : runs the sweep or sets a fixed frequency.
 
-Example sweep output (values are approximate):
+### Sweep mode example (values are approximate)
 
 ```
-Sweeping PLL from 9500000000 to 12500000000 Hz...
-  9.50 GHz -> VTune = 4.891 V
-  9.60 GHz -> VTune = 5.378 V
-  9.70 GHz -> VTune = 5.889 V
-  9.80 GHz -> VTune = 6.423 V
-  9.90 GHz -> VTune = 6.982 V
-  10.00 GHz -> VTune = 7.557 V
-  10.10 GHz -> VTune = 8.171 V
-  10.20 GHz -> VTune = 8.817 V
-  10.30 GHz -> VTune = 9.504 V
-  10.40 GHz -> VTune = 10.206 V
-  10.50 GHz -> VTune = 10.948 V
-  10.60 GHz -> VTune = 11.722 V
-  10.70 GHz -> VTune = 12.552 V
-  10.80 GHz -> VTune = 13.430 V
-  10.90 GHz -> VTune = 13.813 V
-  ...
-  12.50 GHz -> VTune = 13.813 V
+Sweeping signal from 9.5 to 12.5 GHz (RX LO = 2.0 GHz)...
+# freq_GHz,vtune_V
+9.50,4.891
+9.60,5.378
+9.70,5.889
+...
+12.50,13.813
 
 Sweep complete.
+```
+
+### Fixed frequency mode example
+
+```
+Setting signal frequency to 10.500 GHz (PLL = 3.125 GHz)...
+10.500 GHz: VTune = 10.948 V
 ```
 
 **Signal frequency convention:** The sweep labels match the Python
@@ -136,7 +151,7 @@ Sweep complete.
 - **MUXOUT latch test fails (both read 0 or both read 1):** SPI data is not
   reaching the ADF4159. Verify the overlay is active and GPIO 27 is in ALT0
   mode (`raspi-gpio get 27`).
-- **AD7291 init fails:** Check I2C bus with `i2cdetect -y 1` address 0x2A
+- **AD7291 init fails:** Check I2C bus with `i2cdetect -y 1`, address 0x2A
   should respond.
 
 ## File Structure
@@ -153,6 +168,6 @@ cn0566_vtune_sweep/
 
 ## Drivers Used
 
-- **ADF4159**  `drivers/frequency/adf4159/` (No-OS fractional-N PLL driver)
-- **AD7291** `drivers/power/ad7291/` (No-OS I2C voltage monitor driver)
-- **Linux platform** `drivers/platform/linux/` (SPI, I2C, GPIO, delay)
+- **ADF4159** :`drivers/frequency/adf4159/` (No-OS fractional-N PLL driver)
+- **AD7291** : `drivers/power/ad7291/` (No-OS I2C voltage monitor driver)
+- **Linux platform** : `drivers/platform/linux/` (SPI, I2C, GPIO, delay)
