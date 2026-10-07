@@ -8,10 +8,13 @@ import matplotlib.pyplot as plt
 from adi import ad9361
 from scipy import signal
 from numpy.fft import fft, fftfreq, fftshift
+import sys
+sys.path.insert(0,os.path.expanduser("~/pyadi-iio/examples/phaser"))
+from phaser_functions import spec_est
 
 SAMPLE_RATE = 30_000_000
 RX_LO = 2_200_000_000
-BUFFER_SIZE = 4096
+BUFFER_SIZE = 1024
 RX_GAIN = 0
 SIGNAL_FREQ = 10.525e9
 HB100_CAL_FILE = "hb100_freq_val.pkl"
@@ -56,6 +59,7 @@ def tone_result(x, expected_hz, search_hz=2_000_000):
     linear = np.sum(10.0 ** (dbfs[lo:hi] / 10.0))
     integrated_dbfs = 10.0 * np.log10(max(linear, 1e-20))
     return freqs[peak_index], dbfs[peak_index], integrated_dbfs
+    
 
 
 class CProcess:
@@ -142,51 +146,41 @@ def capture(sdr, expected_hz):
         peak = np.max(np.abs(data))
         rms = np.sqrt(np.mean(np.abs(data) ** 2))
         print(f" {name}: peak={peak:.3f} RMS={rms:.3f}")
-
-    # Per-channel spectrum, find peak near expected tone (xB12 MHz window)
-    search_bw = 2_000_000
-    for name, data in (("voltage0", ch0), ("voltage1", ch1)):
-        dbfs, freqs = spectrum(data, SAMPLE_RATE)
-        mask = np.abs(freqs - expected_hz) <= search_bw
-        if np.any(mask):
-            indices = np.flatnonzero(mask)
-            peak_idx = indices[np.argmax(dbfs[mask])]
-        else:
-            peak_idx = np.argmax(dbfs)
-        print(f" {name}: peak frequency = {freqs[peak_idx] / 1e6:.6f} MHz "
-              f"({dbfs[peak_idx]:.1f} dBFS)")
-
-    # Full spectrum of ch0 for plot
-    dbfs_plot, freqs_plot = spectrum(ch0, SAMPLE_RATE)
-    freqs_mhz = freqs_plot / 1e6
-    mask = np.abs(freqs_plot - expected_hz) <= search_bw
-    if np.any(mask):
-        indices = np.flatnonzero(mask)
-        plot_peak_idx = indices[np.argmax(dbfs_plot[mask])]
-    else:
-        plot_peak_idx = np.argmax(dbfs_plot)
-
+        
+    # Add both channel for calculating spectrum
+    data_sum = ch0 + ch1
+    
+    #scales and converts to dB
+    ampl, freqs = spec_est(data_sum, 30e6, ref=2^12,plot= False)
+    ampl = np.fft.fftshift(ampl)
+    ampl = np.flip(ampl)
+    freqs = np.fft.fftshift(freqs)
+    
+    freqs /= 1e6
+    
+    peak_index = np.argmax(ampl)
+    peak_freq = freqs[peak_index]
+    print("Peak frequency found at ",freqs[peak_index], "MHz.")
+    
+    
     # Plot: time domain + spectrum
-    plt.figure(figsize=(10, 6))
+    plt.figure(1)
     plt.subplot(2, 1, 1)
     plt.title("Time Domain I/Q Data")
-    plt.plot(ch0.real, marker="o", ms=2, color="red", label="RX0")
-    plt.plot(ch1.real, marker="o", ms=2, color="blue", label="RX1")
-    plt.xlabel("Sample")
+    plt.plot(ch0.real, marker="o", ms=2, color="red")
+    plt.plot(ch1.real, marker="o", ms=2, color="blue")
+    plt.xlabel("Data point")
     plt.ylabel("ADC output")
-    plt.legend()
 
     plt.subplot(2, 1, 2)
-    plt.title(f"Spectrum x97 peak at {freqs_mhz[plot_peak_idx]:.3f} MHz")
-    plt.plot(freqs_mhz, dbfs_plot, marker="o", ms=2)
-    plt.axvline(x=expected_hz / 1e6, color="r", linestyle="--", alpha=0.5,
-                label=f"expected {expected_hz / 1e6:.1f} MHz")
+    plt.title(f"Spectrum peak at " + str(freqs[peak_index]) + " MHz.")
+    plt.plot(freqs, ampl, marker="o", ms=2)
     plt.xlabel("Frequency [MHz]")
-    plt.ylabel("dBFS")
-    plt.legend()
+    plt.ylabel("Signal Strength")
 
     plt.tight_layout()
     plt.show()
+    
 
 
 HELP = """Commands:
@@ -209,7 +203,7 @@ def main():
     sdr = connect_sdr()
     signal_freq = load_signal_freq(require_cal=True)
     offset = 1_000_000
-    pll_freq = int((signal_freq + RX_LO - offset) / 4)
+    pll_freq = int((signal_freq + RX_LO - offset) // 4)
     for line in hw.command(f"pll_full {pll_freq}"):
         print("[hw]", line)
     for line in hw.command("lock"):
