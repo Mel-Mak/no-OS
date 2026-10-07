@@ -54,10 +54,10 @@ static const struct adf4159_config adf4159_default_cfg = {
 	.clkin          = 100000000,      /* 100 MHz reference */
 	.ref_doubler_en = 0,
 	.ref_div2_en    = 0,
-	.ref_div_factor = 1,              /* R counter = 1 ? fpfd = 100 MHz */
+	.ref_div_factor = 1,              /* R counter = 1 => fpfd = 100 MHz */
 	.cp_curr_uA     = 900,            /* 900 uA charge pump */
-	.pd_pol_pos     = 0,              /* Positive PD polarity */
-	.muxout         = 15,             /* From overlay */
+	.pd_pol_pos     = 0,              /* Negative PD polarity (matches Linux DT overlay) */
+	.muxout         = 6,              /* Digital lock detect (active high) */
 	.clk1_div       = 100,
 	.clk2_div       = {0, 0},
 	.clk_div_mode   = 0,

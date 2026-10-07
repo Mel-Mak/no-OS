@@ -171,11 +171,11 @@ struct adf4159_config {
 	uint32_t	clkin;		/* Reference clock in Hz */
 	uint8_t		ref_doubler_en;
 	uint8_t		ref_div2_en;
-	uint32_t	ref_div_factor;	/* R counter (1�32) */
+	uint32_t	ref_div_factor;	/* R counter (1-32) */
 	uint32_t	cp_curr_uA;	/* Charge pump current in uA */
 	uint8_t		pd_pol_pos;	/* Phase detector polarity: 1=positive */
-	uint32_t	muxout;		/* MUXOUT select (0�15) */
-	uint32_t	clk1_div;	/* CLK1 divider (0�4095) */
+	uint32_t	muxout;		/* MUXOUT select (0-15) */
+	uint32_t	clk1_div;	/* CLK1 divider (0-4095) */
 	uint32_t	clk2_div[2];	/* CLK2 dividers [SEL0, SEL1] */
 	uint32_t	clk_div_mode;	/* CLK divider mode */
 	uint32_t	ramp_mode;	/* 0=disabled */
@@ -184,7 +184,7 @@ struct adf4159_config {
 	uint32_t	deviation_offs;	/* Deviation offset */
 	uint32_t	step_word[2];	/* Step words [SEL0, SEL1] */
 	uint32_t	delay_start_word;
-	uint32_t	phase;		/* Phase value (0�4095) */
+	uint32_t	phase;		/* Phase value (0-4095) */
 	uint32_t	interrupt_mode;
 	uint8_t		neg_bleed_en;
 	uint32_t	neg_bleed_curr;
@@ -232,5 +232,7 @@ int32_t adf4159_write(struct adf4159_dev *dev, uint32_t val);
 int32_t adf4159_sync_config(struct adf4159_dev *dev);
 int32_t adf4159_setup(struct adf4159_dev *dev, uint64_t freq_hz);
 int32_t adf4159_set_freq(struct adf4159_dev *dev, uint64_t freq_hz);
+int32_t adf4159_set_muxout(struct adf4159_dev *dev, uint8_t muxout);
+void adf4159_dump_regs(struct adf4159_dev *dev);
 
 #endif /* _ADF4159_H_ */
