@@ -4,33 +4,10 @@
  *          Based on the ADI Linux kernel IIO driver (GPLv2).
  *   @author Melissa Makonga
  ********************************************************************************
- * Copyright 2025(c) Analog Devices, Inc.
+ * Copyright 2020(c) Analog Devices, Inc.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * 3. Neither the name of Analog Devices, Inc. nor the names of its
- *    contributors may be used to endorse or promote products derived from this
- *    software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY ANALOG DEVICES, INC. "AS IS" AND ANY EXPRESS OR
- * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
- * EVENT SHALL ANALOG DEVICES, INC. BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
- * OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
- * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- ******************************************************************************/
+ * SPDX-License-Identifier: BSD-3-Clause
+ *******************************************************************************/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,8 +35,6 @@ int32_t adf4159_write(struct adf4159_dev *dev, uint32_t val)
 	buf[1] = (val >> 16) & 0xFF;
 	buf[2] = (val >>  8) & 0xFF;
 	buf[3] = (val >>  0) & 0xFF;
-
-	// printf("  SPI R%d: 0x%08X\n", val & 0x7, val);
 
 	if (dev->gpio_le)
 		ADF4159_LE_LOW;
@@ -216,7 +191,7 @@ int32_t adf4159_setup(struct adf4159_dev *dev, uint64_t freq_hz)
 
 	ramp_en = (cfg->ramp_mode != 0) ? 1 : 0;
 
-	/* Populate all registers (without address bits � OR'd at write time) */
+	/* Populate all registers (without address bits, OR'd at write time) */
 	memset(st->regs, 0, sizeof(st->regs));
 
 	/* R0: FRAC MSB + INT + MUXOUT + RAMP_ON */
@@ -297,7 +272,7 @@ int32_t adf4159_setup(struct adf4159_dev *dev, uint64_t freq_hz)
  *
  * Recomputes INT/FRAC for the new frequency and writes R3 (counter reset),
  * R2, R1, R0, R3 (clear counter reset). This is the fast frequency
- * update path � for initial setup, use adf4159_setup().
+ * update path, for initial setup, use adf4159_setup().
  *
  * @param dev     - The device structure.
  * @param freq_hz - Desired output frequency in Hz.
@@ -368,17 +343,32 @@ int32_t adf4159_set_freq(struct adf4159_dev *dev, uint64_t freq_hz)
 	return ret;
 }
 
-/***************************************************************************//**
- * @brief Initialize the ADF4159 device.
- *
- * Sets up SPI, optional GPIOs, and programs the PLL if a power-up
- * frequency is configured.
- *
- * @param device - Pointer to the device descriptor (allocated here).
- * @param param  - Initialization parameters.
- *
- * @return 0 on success, negative error code otherwise.
- ******************************************************************************/
+int32_t adf4159_set_muxout(struct adf4159_dev *dev, uint8_t muxout)
+{
+	dev->st.regs[ADF4159_REG0] &= ~ADF4159_REG0_MUXOUT_MASK;
+	dev->st.regs[ADF4159_REG0] |= ADF4159_REG0_MUXOUT(muxout);
+	return adf4159_write(dev, dev->st.regs[ADF4159_REG0] | ADF4159_REG0);
+}
+
+void adf4159_dump_regs(struct adf4159_dev *dev)
+{
+	static const char *names[] = {
+		"R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7",
+		"R4_SEL1", "R5_SEL1", "R6_SEL1"
+	};
+	printf("  ADF4159 register dump:\n");
+	for (int i = 0; i < ADF4159_NUM_REGS; i++) {
+		uint32_t addr = (i < 8) ? i : (i - 4);
+		printf("    %-8s [%d]: 0x%08X (wire: 0x%08X)\n",
+		       names[i], (int)addr,
+		       dev->st.regs[i],
+		       dev->st.regs[i] | addr);
+	}
+	printf("  Config: fpfd=%llu Hz, INT=%u, FRAC=%u, R=%u\n",
+	       (unsigned long long)dev->st.fpfd,
+	       dev->st.integer, dev->st.fract, dev->st.r_cnt);
+}
+
 int32_t adf4159_init(struct adf4159_dev **device,
 		     const struct adf4159_init_param *param)
 {
@@ -393,7 +383,7 @@ int32_t adf4159_init(struct adf4159_dev **device,
 	/* Copy configuration */
 	memcpy(&dev->config, &param->config, sizeof(dev->config));
 
-	/* Setup GPIO LE � optional (skip if number < 0,
+	/* Setup GPIO LE, optional (skip if number < 0,
 	 * meaning the SPI controller handles CS/LE natively) */
 	if (param->gpio_le.number >= 0) {
 		ret = no_os_gpio_get(&dev->gpio_le, &param->gpio_le);
@@ -403,7 +393,7 @@ int32_t adf4159_init(struct adf4159_dev **device,
 		ADF4159_LE_LOW;
 	}
 
-	/* Setup GPIO CE � optional */
+	/* Setup GPIO CE, optional */
 	if (param->gpio_ce.number >= 0) {
 		ret = no_os_gpio_get(&dev->gpio_ce, &param->gpio_ce);
 		if (ret)

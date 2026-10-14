@@ -4,33 +4,10 @@
  *          Based on the ADI Linux kernel IIO driver (GPLv2).
  *   @author Melissa Makonga
  ********************************************************************************
- * Copyright 2025(c) Analog Devices, Inc.
+ * Copyright 2020(c) Analog Devices, Inc.
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- *
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * 3. Neither the name of Analog Devices, Inc. nor the names of its
- *    contributors may be used to endorse or promote products derived from this
- *    software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY ANALOG DEVICES, INC. "AS IS" AND ANY EXPRESS OR
- * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
- * EVENT SHALL ANALOG DEVICES, INC. BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
- * OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
- * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
- * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- ******************************************************************************/
+ * SPDX-License-Identifier: BSD-3-Clause
+ *******************************************************************************/
 #ifndef _ADF4159_H_
 #define _ADF4159_H_
 
@@ -171,11 +148,11 @@ struct adf4159_config {
 	uint32_t	clkin;		/* Reference clock in Hz */
 	uint8_t		ref_doubler_en;
 	uint8_t		ref_div2_en;
-	uint32_t	ref_div_factor;	/* R counter (1�32) */
+	uint32_t	ref_div_factor;	/* R counter (1-32) */
 	uint32_t	cp_curr_uA;	/* Charge pump current in uA */
 	uint8_t		pd_pol_pos;	/* Phase detector polarity: 1=positive */
-	uint32_t	muxout;		/* MUXOUT select (0�15) */
-	uint32_t	clk1_div;	/* CLK1 divider (0�4095) */
+	uint32_t	muxout;		/* MUXOUT select (0-15) */
+	uint32_t	clk1_div;	/* CLK1 divider (0-4095) */
 	uint32_t	clk2_div[2];	/* CLK2 dividers [SEL0, SEL1] */
 	uint32_t	clk_div_mode;	/* CLK divider mode */
 	uint32_t	ramp_mode;	/* 0=disabled */
@@ -184,7 +161,7 @@ struct adf4159_config {
 	uint32_t	deviation_offs;	/* Deviation offset */
 	uint32_t	step_word[2];	/* Step words [SEL0, SEL1] */
 	uint32_t	delay_start_word;
-	uint32_t	phase;		/* Phase value (0�4095) */
+	uint32_t	phase;		/* Phase value (0-4095) */
 	uint32_t	interrupt_mode;
 	uint8_t		neg_bleed_en;
 	uint32_t	neg_bleed_curr;
@@ -232,5 +209,7 @@ int32_t adf4159_write(struct adf4159_dev *dev, uint32_t val);
 int32_t adf4159_sync_config(struct adf4159_dev *dev);
 int32_t adf4159_setup(struct adf4159_dev *dev, uint64_t freq_hz);
 int32_t adf4159_set_freq(struct adf4159_dev *dev, uint64_t freq_hz);
+int32_t adf4159_set_muxout(struct adf4159_dev *dev, uint8_t muxout);
+void adf4159_dump_regs(struct adf4159_dev *dev);
 
 #endif /* _ADF4159_H_ */
