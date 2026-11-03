@@ -25,12 +25,17 @@ set(NO_OS_SOURCES
 
 add_executable(phaser_test
     main.c
-    iio_capture.c
+    cn0566/cn0566_control.c
+    capture/iio_capture.c
+    analysis/genalyzer_analysis.c  
     ${NO_OS_SOURCES}
 )
 
 target_include_directories(phaser_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/cn0566
+    ${CMAKE_CURRENT_SOURCE_DIR}/capture
+    ${CMAKE_CURRENT_SOURCE_DIR}/analysis
     ${NO_OS_ROOT}/include
     ${NO_OS_ROOT}/drivers/rf-transceiver/adar1000
     ${NO_OS_ROOT}/drivers/frequency/adf4159
