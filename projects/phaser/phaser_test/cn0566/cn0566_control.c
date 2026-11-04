@@ -175,6 +175,7 @@ int32_t cn0566_set_all_rx_gains(struct cn0566_dev *dev, uint8_t gain)
     for (chip = 0; chip < CN0566_NUM_ADAR1000; chip++) {
         ret = adar1000_set_all_rx_gains(dev->adar[chip], gains);
         if (ret) return ret;
+        if ((ret = adar1000_latch_rx(dev->adar[chip]))) return ret;
     }
     return 0;
 }

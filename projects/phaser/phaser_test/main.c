@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "cn0566_control.h"
 #include "genalyzer_analysis.h"
 #include "iio_capture.h"
@@ -15,6 +16,8 @@
 #define RF_BANDWIDTH_HZ 10000000LL
 #define DEFAULT_SAMPLES 4096U
 #define DEFAULT_CSV "captures/capture.csv"
+#define SIGNAL_FREQ_HZ 10525000000ULL
+#define OFFSET_HZ 1000000LL
 
 static void print_help(void)
 {
@@ -25,12 +28,34 @@ static void print_help(void)
          "capture_analyze [csv] [samples]\nhelp | quit");
 }
 
+static void channel_stats(const char *name, const struct iio_complex_sample *s,
+                          size_t n)
+{
+    double sum_sq = 0.0;
+    int32_t peak = 0;
+    size_t i;
+    for (i = 0; i < n; i++) {
+        int32_t mag_sq = (int32_t)s[i].i * s[i].i + (int32_t)s[i].q * s[i].q;
+        sum_sq += (double)mag_sq;
+        if (mag_sq > peak) peak = mag_sq;
+    }
+    printf("  %s: peak=%.1f  RMS=%.1f\n", name,
+           sqrt((double)peak), sqrt(sum_sq / n));
+}
+
+static void print_capture_stats(const struct iio_capture_data *data)
+{
+    channel_stats("RX0", data->rx0, data->sample_count);
+    channel_stats("RX1", data->rx1, data->sample_count);
+}
+
 static int acquire(struct iio_capture *capture, const char *csv, size_t samples,
                    int save, int analyze)
 {
     struct iio_capture_data data = {0};
     int ret = iio_capture_read(capture, &data, samples);
     if (ret) return ret;
+    print_capture_stats(&data);
     if (analyze) {
         struct genalyzer_config cfg = {SAMPLE_RATE_HZ, samples, 3U};
         struct genalyzer_result result;
@@ -75,7 +100,19 @@ int main(int argc, char **argv)
         }
     }
     if (ret) goto cleanup;
-    printf("Pluto connected: %s\nREADY\n", cap_cfg.uri);
+    printf("Pluto connected: %s\n", cap_cfg.uri);
+
+    /* Set PLL frequency: same calculation as phaser_noos_test.py */
+    {
+        uint64_t pll_freq = (SIGNAL_FREQ_HZ + RX_LO_HZ - OFFSET_HZ) / 4;
+        struct adf4159_dev *pll_init = cn0566_get_adf4159(board);
+        printf("Setting PLL to %llu Hz ...\n", (unsigned long long)pll_freq);
+        if ((ret = adf4159_setup(pll_init, pll_freq))) goto cleanup;
+        if ((ret = cn0566_get_pll_lock(board, &lock))) goto cleanup;
+        printf("PLL: %s\n", lock ? "LOCKED" : "NOT LOCKED");
+    }
+
+    puts("READY");
     print_help();
 
     while (1) {

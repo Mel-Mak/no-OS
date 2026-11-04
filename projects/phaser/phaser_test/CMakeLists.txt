@@ -11,6 +11,13 @@ set(NO_OS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." CACHE PATH "no-OS reposito
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBIIO REQUIRED IMPORTED_TARGET libiio)
 
+find_library(GENALYZER_LIB NAMES genalyzer)
+find_path(GENALYZER_INCLUDE NAMES cgenalyzer.h)
+if(NOT GENALYZER_LIB OR NOT GENALYZER_INCLUDE)
+    message(FATAL_ERROR "Genalyzer library not found. Install from https://github.com/analogdevicesinc/genalyzer")
+endif()
+
+
 set(NO_OS_SOURCES
     ${NO_OS_ROOT}/drivers/rf-transceiver/adar1000/adar1000.c
     ${NO_OS_ROOT}/drivers/frequency/adf4159/adf4159.c
@@ -36,11 +43,12 @@ target_include_directories(phaser_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/cn0566
     ${CMAKE_CURRENT_SOURCE_DIR}/capture
     ${CMAKE_CURRENT_SOURCE_DIR}/analysis
+    ${GENALYZER_INCLUDE}
     ${NO_OS_ROOT}/include
     ${NO_OS_ROOT}/drivers/rf-transceiver/adar1000
     ${NO_OS_ROOT}/drivers/frequency/adf4159
     ${NO_OS_ROOT}/drivers/platform/linux-userspace
 )
 
-target_link_libraries(phaser_test PRIVATE PkgConfig::LIBIIO m)
+target_link_libraries(phaser_test PRIVATE PkgConfig::LIBIIO ${GENALYZER_LIB} m)
 target_compile_options(phaser_test PRIVATE -Wall -Wextra -Wpedantic)

@@ -1,13 +1,17 @@
 #include "genalyzer_analysis.h"
+#include <cgenalyzer.h>
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-/* Analysis adapter. Replace analyze_channel() with calls matching the installed
- * Genalyzer C API version; the public interface and capture path stay unchanged. */
+#define ADC_BITS 12
+#define CFG_KEY "phaser"
+
 static double wrap_phase(double x)
 {
     while (x > 180.0) x -= 360.0;
@@ -16,38 +20,100 @@ static double wrap_phase(double x)
 }
 
 static int analyze_channel(const struct iio_complex_sample *x, size_t n,
-                           double fs, struct channel_analysis *r)
+                           double fs, unsigned int max_harmonics,
+                           struct channel_analysis *r)
 {
-    size_t k, m, peak = 1;
-    double peak_power = 0.0, second_power = 0.0, total_power = 0.0;
-    double peak_re = 0.0, peak_im = 0.0;
-    if (!x || !r || n < 8 || fs <= 0.0) return -EINVAL;
-    for (k = 1; k < n; k++) {
-        double re = 0.0, im = 0.0;
-        for (m = 0; m < n; m++) {
-            double window = 0.5 - 0.5 * cos(2.0 * M_PI * m / (n - 1));
-            double angle = -2.0 * M_PI * k * m / n;
-            double i = x[m].i * window, q = x[m].q * window;
-            re += i * cos(angle) - q * sin(angle);
-            im += i * sin(angle) + q * cos(angle);
-        }
-        {
-            double power = re * re + im * im;
-            total_power += power;
-            if (power > peak_power) {
-                second_power = peak_power;
-                peak_power = power; peak = k; peak_re = re; peak_im = im;
-            } else if (power > second_power) {
-                second_power = power;
-            }
-        }
+    int16_t *idata = NULL, *qdata = NULL;
+    double *fft_out = NULL;
+    char **rkeys = NULL;
+    double *rvalues = NULL;
+    size_t *key_sizes = NULL;
+    size_t fft_out_size = 0, nresults = 0;
+    size_t i;
+    int ret;
+
+    if (!x || !r || n < 8 || fs <= 0.0)
+        return -EINVAL;
+
+    idata = malloc(n * sizeof(*idata));
+    qdata = malloc(n * sizeof(*qdata));
+    if (!idata || !qdata) { ret = -ENOMEM; goto cleanup; }
+
+    for (i = 0; i < n; i++) {
+        idata[i] = x[i].i;
+        qdata[i] = x[i].q;
     }
-    r->fundamental_hz = peak <= n / 2 ? peak * fs / n : ((double)peak - n) * fs / n;
-    r->magnitude_dbfs = 10.0 * log10(peak_power / ((double)n * n * 2048.0 * 2048.0) + 1e-30);
-    r->phase_deg = atan2(peak_im, peak_re) * 180.0 / M_PI;
-    r->snr_db = 10.0 * log10(peak_power / fmax(total_power - peak_power, 1e-30));
-    r->sfdr_db = 10.0 * log10(peak_power / fmax(second_power, 1e-30));
-    return 0;
+
+    ret = gn_fft_size(&fft_out_size, n, n, 1, n);
+    if (ret) goto cleanup;
+
+    fft_out = malloc(fft_out_size * sizeof(*fft_out));
+    if (!fft_out) { ret = -ENOMEM; goto cleanup; }
+
+    ret = gn_fft16(fft_out, fft_out_size,
+                   idata, n, qdata, n,
+                   ADC_BITS, 1, n,
+                   GnWindowBlackmanHarris,
+                   GnCodeFormatTwosComplement);
+    if (ret) goto cleanup;
+
+    gn_mgr_remove(CFG_KEY);
+    ret = gn_fa_create(CFG_KEY);
+    if (ret) goto cleanup;
+
+    gn_fa_fsample(CFG_KEY, fs);
+    gn_fa_max_tone(CFG_KEY, "sig", GnFACompTagSignal, 0);
+    gn_fa_hd(CFG_KEY, (int)max_harmonics);
+
+    ret = gn_fft_analysis_results_size(&nresults, CFG_KEY, fft_out_size, n);
+    if (ret) goto cleanup;
+
+    key_sizes = malloc(nresults * sizeof(*key_sizes));
+    rkeys = calloc(nresults, sizeof(*rkeys));
+    rvalues = malloc(nresults * sizeof(*rvalues));
+    if (!key_sizes || !rkeys || !rvalues) { ret = -ENOMEM; goto cleanup; }
+
+    ret = gn_fft_analysis_results_key_sizes(key_sizes, nresults,
+                                            CFG_KEY, fft_out_size, n);
+    if (ret) goto cleanup;
+
+    for (i = 0; i < nresults; i++) {
+        rkeys[i] = malloc(key_sizes[i]);
+        if (!rkeys[i]) { ret = -ENOMEM; goto cleanup; }
+    }
+
+    ret = gn_fft_analysis(rkeys, nresults, rvalues, nresults,
+                          CFG_KEY, fft_out, fft_out_size, n,
+                          GnFreqAxisTypeDcCenter);
+    if (ret) goto cleanup;
+
+    gn_fa_result(&r->fundamental_hz, (const char **)rkeys, nresults,
+                 rvalues, nresults, "sig:freq");
+    gn_fa_result(&r->magnitude_dbfs, (const char **)rkeys, nresults,
+                 rvalues, nresults, "sig:mag_dbfs");
+    gn_fa_result(&r->phase_deg, (const char **)rkeys, nresults,
+                 rvalues, nresults, "sig:phase");
+    gn_fa_result(&r->snr_db, (const char **)rkeys, nresults,
+                 rvalues, nresults, "snr");
+    gn_fa_result(&r->sfdr_db, (const char **)rkeys, nresults,
+                 rvalues, nresults, "sfdr");
+
+    r->phase_deg = r->phase_deg * 180.0 / M_PI;
+    ret = 0;
+
+cleanup:
+    gn_mgr_remove(CFG_KEY);
+    free(idata);
+    free(qdata);
+    free(fft_out);
+    free(key_sizes);
+    if (rkeys) {
+        for (i = 0; i < nresults; i++)
+            free(rkeys[i]);
+        free(rkeys);
+    }
+    free(rvalues);
+    return ret;
 }
 
 int genalyzer_analyze_iq(const struct iio_capture_data *cap,
@@ -57,9 +123,11 @@ int genalyzer_analyze_iq(const struct iio_capture_data *cap,
     int ret;
     if (!cap || !cfg || !r || cfg->fft_size != cap->sample_count) return -EINVAL;
     if ((ret = analyze_channel(cap->rx0, cap->sample_count,
-                               cfg->sample_rate_hz, &r->rx0))) return ret;
+                               cfg->sample_rate_hz, cfg->max_harmonics,
+                               &r->rx0))) return ret;
     if ((ret = analyze_channel(cap->rx1, cap->sample_count,
-                               cfg->sample_rate_hz, &r->rx1))) return ret;
+                               cfg->sample_rate_hz, cfg->max_harmonics,
+                               &r->rx1))) return ret;
     r->relative_phase_deg = wrap_phase(r->rx1.phase_deg - r->rx0.phase_deg);
     r->relative_gain_db = r->rx1.magnitude_dbfs - r->rx0.magnitude_dbfs;
     return 0;

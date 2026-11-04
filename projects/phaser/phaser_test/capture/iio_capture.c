@@ -50,7 +50,7 @@ int iio_capture_open(struct iio_capture **out,
                      const struct iio_capture_config *cfg)
 {
     struct iio_capture *cap;
-    struct iio_channel *rx0, *rx1, *lo;
+    struct iio_channel *rx0, *rx1, *lo, *tx0, *tx1;
     int ret;
     if (!out || !cfg || !cfg->uri || !cfg->samples) return -EINVAL;
     cap = calloc(1, sizeof(*cap));
@@ -75,6 +75,10 @@ int iio_capture_open(struct iio_capture **out,
     if ((ret = configure_phy(rx1, cfg->sample_rate_hz, cfg->rf_bandwidth_hz,
                              cfg->rx1_gain_db))) goto fail;
     if ((ret = write_ll(lo, "frequency", cfg->rx_lo_hz))) goto fail;
+    tx0 = iio_device_find_channel(cap->phy, "voltage0", true);
+    tx1 = iio_device_find_channel(cap->phy, "voltage1", true);
+    if (tx0) write_str(tx0, "hardwaregain", "-88.000");
+    if (tx1) write_str(tx1, "hardwaregain", "-88.000");
     iio_channel_enable(cap->i0); iio_channel_enable(cap->q0);
     iio_channel_enable(cap->i1); iio_channel_enable(cap->q1);
     cap->discarded_buffers = cfg->discarded_buffers;
