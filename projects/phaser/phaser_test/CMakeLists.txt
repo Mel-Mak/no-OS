@@ -42,5 +42,5 @@ target_include_directories(phaser_test PRIVATE
     ${NO_OS_ROOT}/drivers/platform/linux-userspace
 )
 
-target_link_libraries(phaser_test PRIVATE PkgConfig::LIBIIO)
+target_link_libraries(phaser_test PRIVATE PkgConfig::LIBIIO m)
 target_compile_options(phaser_test PRIVATE -Wall -Wextra -Wpedantic)
