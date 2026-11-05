@@ -30,7 +30,6 @@ static int configure_phy(struct iio_channel *ch, int64_t fs, int64_t bw, double 
 {
     char text[32]; int ret;
     if (!ch) return -ENODEV;
-    if ((ret = write_str(ch, "rf_port_select", "A_BALANCED"))) return ret;
     if ((ret = write_ll(ch, "sampling_frequency", fs))) return ret;
     if ((ret = write_ll(ch, "rf_bandwidth", bw))) return ret;
     if ((ret = write_str(ch, "gain_control_mode", "manual"))) return ret;
@@ -81,6 +80,7 @@ int iio_capture_open(struct iio_capture **out,
     if (tx1) write_str(tx1, "hardwaregain", "-88.000");
     iio_channel_enable(cap->i0); iio_channel_enable(cap->q0);
     iio_channel_enable(cap->i1); iio_channel_enable(cap->q1);
+    iio_device_set_kernel_buffers_count(cap->rxdev, 1);
     cap->discarded_buffers = cfg->discarded_buffers;
     if ((ret = create_buffer(cap, cfg->samples))) goto fail;
     *out = cap;
@@ -158,6 +158,135 @@ void iio_capture_data_free(struct iio_capture_data *data)
     if (!data) return;
     free(data->rx0); free(data->rx1);
     *data = (struct iio_capture_data){0};
+}
+
+static void read_attr_ll(struct iio_channel *ch, const char *attr)
+{
+    long long val = 0;
+    int ret = (int)iio_channel_attr_read_longlong(ch, attr, &val);
+    if (ret < 0)
+        printf("  %-28s ERROR (%s)\n", attr, strerror(-ret));
+    else
+        printf("  %-28s %lld\n", attr, val);
+}
+static void read_attr_str(struct iio_channel *ch, const char *attr)
+{
+    char buf[64] = {0};
+    int ret = (int)iio_channel_attr_read(ch, attr, buf, sizeof(buf));
+    if (ret < 0)
+        printf("  %-28s ERROR (%s)\n", attr, strerror(-ret));
+    else
+        printf("  %-28s %s\n", attr, buf);
+}
+
+int iio_capture_diag(struct iio_capture *cap)
+{
+    struct iio_channel *ch;
+    ssize_t bytes;
+    if (!cap) return -EINVAL;
+
+    printf("=== SDR diagnostic ===\n");
+    printf("Context: %s\n", iio_context_get_attr_value(cap->ctx, "uri"));
+    printf("PHY device: %s\n", cap->phy ? iio_device_get_name(cap->phy) : "NOT FOUND");
+    printf("RX device: %s\n", cap->rxdev ? iio_device_get_name(cap->rxdev) : "NOT FOUND");
+
+    printf("\n-- RX0 (voltage0 input) --\n");
+    ch = iio_device_find_channel(cap->phy, "voltage0", false);
+    if (ch) {
+        read_attr_ll(ch, "sampling_frequency");
+        read_attr_ll(ch, "rf_bandwidth");
+        read_attr_str(ch, "gain_control_mode");
+        read_attr_str(ch, "hardwaregain");
+        read_attr_str(ch, "rf_port_select");
+        read_attr_str(ch, "filter_fir_en");
+        read_attr_str(ch, "bb_dc_offset_tracking_en");
+        read_attr_str(ch, "quadrature_tracking_en");
+        read_attr_str(ch, "rf_dc_offset_tracking_en");
+    } else printf("  NOT FOUND\n");
+
+    printf("\n-- RX1 (voltage1 input) --\n");
+    ch = iio_device_find_channel(cap->phy, "voltage1", false);
+    if (ch) {
+        read_attr_ll(ch, "sampling_frequency");
+        read_attr_str(ch, "hardwaregain");
+    } else printf("  NOT FOUND\n");
+
+    printf("\n-- RX LO (altvoltage0 output) --\n");
+    ch = iio_device_find_channel(cap->phy, "altvoltage0", true);
+    if (ch) {
+        read_attr_ll(ch, "frequency");
+        read_attr_str(ch, "powerdown");
+    } else printf("  NOT FOUND\n");
+
+    printf("\n-- TX LO (altvoltage1 output) --\n");
+    ch = iio_device_find_channel(cap->phy, "altvoltage1", true);
+    if (ch) {
+        read_attr_ll(ch, "frequency");
+        read_attr_str(ch, "powerdown");
+    } else printf("  NOT FOUND\n");
+
+    printf("\n-- TX0 (voltage0 output) --\n");
+    ch = iio_device_find_channel(cap->phy, "voltage0", true);
+    if (ch) {
+        read_attr_str(ch, "hardwaregain");
+    } else printf("  NOT FOUND\n");
+
+    printf("\n-- TX1 (voltage1 output) --\n");
+    ch = iio_device_find_channel(cap->phy, "voltage1", true);
+    if (ch) {
+        read_attr_str(ch, "hardwaregain");
+    } else printf("  NOT FOUND\n");
+
+    printf("\n-- Device attributes --\n");
+    {
+        char buf[256] = {0};
+        const char *dev_attrs[] = {"ensm_mode", "calib_mode",
+            "rx_path_rates", "tx_path_rates", NULL};
+        for (int i = 0; dev_attrs[i]; i++) {
+            int ret = (int)iio_device_attr_read(cap->phy, dev_attrs[i],
+                                                 buf, sizeof(buf));
+            if (ret < 0)
+                printf("  %-28s ERROR\n", dev_attrs[i]);
+            else
+                printf("  %-28s %s\n", dev_attrs[i], buf);
+        }
+    }
+
+    printf("\n-- Capture channels --\n");
+    printf("  i0: %s  q0: %s  i1: %s  q1: %s\n",
+           cap->i0 ? "enabled" : "MISSING",
+           cap->q0 ? "enabled" : "MISSING",
+           cap->i1 ? "enabled" : "MISSING",
+           cap->q1 ? "enabled" : "MISSING");
+    printf("  buffer: %s  samples: %zu\n",
+           cap->buffer ? "created" : "NONE", cap->buffer_samples);
+
+    if (cap->buffer) {
+        bytes = iio_buffer_refill(cap->buffer);
+        printf("  refill: %zd bytes (expected %zu)\n",
+               bytes, cap->buffer_samples * iio_buffer_step(cap->buffer));
+        printf("  step: %td bytes\n", iio_buffer_step(cap->buffer));
+    }
+
+    printf("=== end diagnostic ===\n");
+    return 0;
+}
+
+int iio_capture_set_rx_gain(struct iio_capture *cap,
+                            double rx0_db, double rx1_db)
+{
+    struct iio_channel *ch;
+    char text[32];
+    int ret;
+    if (!cap || !cap->phy) return -EINVAL;
+    ch = iio_device_find_channel(cap->phy, "voltage0", false);
+    if (!ch) return -ENODEV;
+    snprintf(text, sizeof(text), "%.3f", rx0_db);
+    if ((ret = write_str(ch, "hardwaregain", text))) return ret;
+    ch = iio_device_find_channel(cap->phy, "voltage1", false);
+    if (!ch) return -ENODEV;
+    snprintf(text, sizeof(text), "%.3f", rx1_db);
+    return write_str(ch, "hardwaregain", text);
 }
 
 void iio_capture_close(struct iio_capture *cap)

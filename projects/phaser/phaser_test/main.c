@@ -9,23 +9,24 @@
 
 #define MAX_CMD_LEN 512U
 #define SETTLE_MS 50U
-#define DEFAULT_URI "ip:192.168.2.1"
-#define FALLBACK_URI "ip:localhost"
+#define DEFAULT_URI "ip:localhost"
+#define FALLBACK_URI "ip:192.168.2.1"
 #define SAMPLE_RATE_HZ 30000000LL
 #define RX_LO_HZ 2200000000LL
 #define RF_BANDWIDTH_HZ 10000000LL
 #define DEFAULT_SAMPLES 4096U
 #define DEFAULT_CSV "captures/capture.csv"
-#define SIGNAL_FREQ_HZ 10525000000ULL
+#define SIGNAL_FREQ_HZ 10425537000ULL
 #define OFFSET_HZ 1000000LL
 
 static void print_help(void)
 {
     puts("gain <chip> <ch> <0-127>\ngain_all <0-127>\n"
          "phase <chip> <ch> <0-359>\nphase_all <0-359>\n"
+         "rx_gain <dB>              set AD9361 RX gain (both channels)\n"
          "pll <hz> | pll_full <hz>\nlock | gpios | dump\n"
          "capture [csv] [samples]\nanalyze [samples]\n"
-         "capture_analyze [csv] [samples]\nhelp | quit");
+         "capture_analyze [csv] [samples]\nraw | diag\nhelp | quit");
 }
 
 static void channel_stats(const char *name, const struct iio_complex_sample *s,
@@ -83,6 +84,7 @@ int main(int argc, char **argv)
     uint8_t lock;
     unsigned chip, ch, val;
     unsigned long long freq;
+    double rx_gain_val;
 
     setlinebuf(stdout);
     if ((ret = cn0566_init(&board, &board_cfg))) goto cleanup;
@@ -108,8 +110,11 @@ int main(int argc, char **argv)
         struct adf4159_dev *pll_init = cn0566_get_adf4159(board);
         printf("Setting PLL to %llu Hz ...\n", (unsigned long long)pll_freq);
         if ((ret = adf4159_setup(pll_init, pll_freq))) goto cleanup;
+        no_os_mdelay(SETTLE_MS);
         if ((ret = cn0566_get_pll_lock(board, &lock))) goto cleanup;
         printf("PLL: %s\n", lock ? "LOCKED" : "NOT LOCKED");
+        if (!lock)
+            printf("WARNING: PLL not locked, signal may be absent\n");
     }
 
     puts("READY");
@@ -189,6 +194,13 @@ int main(int argc, char **argv)
                                        (uint16_t)val);
     }
 
+    /* AD9361 RX gain */
+    else if (sscanf(cmd, "rx_gain %lf", &rx_gain_val) == 1) {
+        ret = iio_capture_set_rx_gain(capture,
+                                      rx_gain_val,
+                                      rx_gain_val);
+    }
+
     /* ADF4159 control */
     else if (sscanf(cmd, "pll_full %llu", &freq) == 1) {
         ret = adf4159_setup(pll, (uint64_t)freq);
@@ -204,6 +216,23 @@ int main(int argc, char **argv)
         if (!ret)
             printf("PLL: %s\n",
                    lock ? "LOCKED" : "NOT LOCKED");
+    }
+
+    else if (!strcmp(cmd, "muxout_test")) {
+        struct adf4159_dev *p = cn0566_get_adf4159(board);
+        printf("Setting MUXOUT=DVDD (should read 1)...\n");
+        adf4159_set_muxout(p, 1);
+        no_os_mdelay(10);
+        cn0566_get_pll_lock(board, &lock);
+        printf("  MUXOUT GPIO = %u %s\n", lock,
+               lock ? "OK" : "FAIL: pin/GPIO broken");
+        printf("Restoring MUXOUT=DLOCK...\n");
+        adf4159_set_muxout(p, 6);
+        no_os_mdelay(50);
+        cn0566_get_pll_lock(board, &lock);
+        printf("  MUXOUT GPIO = %u (%s)\n", lock,
+               lock ? "LOCKED" : "NOT LOCKED");
+        ret = 0;
     }
 
     else if (!strcmp(cmd, "dump")) {
@@ -253,6 +282,35 @@ int main(int argc, char **argv)
                       samples,
                       0,
                       1);
+    }
+
+    else if (!strcmp(cmd, "diag")) {
+        printf("-- PLL --\n");
+        adf4159_dump_regs(cn0566_get_adf4159(board));
+        no_os_mdelay(10);
+        cn0566_get_pll_lock(board, &lock);
+        printf("PLL lock: %u\n", lock);
+        printf("\n-- GPIOs --\n");
+        cn0566_verify_gpios(board);
+        printf("\n");
+        iio_capture_diag(capture);
+        ret = 0;
+    }
+
+    else if (!strcmp(cmd, "raw")) {
+        struct iio_capture_data data = {0};
+        ret = iio_capture_read(capture, &data, DEFAULT_SAMPLES);
+        if (!ret) {
+            size_t show = data.sample_count < 10 ? data.sample_count : 10;
+            printf("URI: %s  samples: %zu  showing first %zu\n",
+                   cap_cfg.uri, data.sample_count, show);
+            for (size_t j = 0; j < show; j++)
+                printf("  [%zu] rx0=(%d,%d) rx1=(%d,%d)\n", j,
+                       data.rx0[j].i, data.rx0[j].q,
+                       data.rx1[j].i, data.rx1[j].q);
+            print_capture_stats(&data);
+        }
+        iio_capture_data_free(&data);
     }
 
     else {

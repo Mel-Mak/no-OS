@@ -131,10 +131,22 @@ static int32_t init_pll(struct adf4159_dev **pll)
 {
     struct adf4159_init_param p = {
         .spi_init = {.device_id = ADF4159_SPI_DEVICE,
-            .max_speed_hz = ADF4159_SPI_SPEED, .chip_select = ADF4159_SPI_CS,
-            .mode = NO_OS_SPI_MODE_0, .platform_ops = SPI_OPS, .extra = NULL},
-        .gpio_le = {.number = ADF4159_GPIO_LE, .platform_ops = GPIO_OPS, .extra = NULL},
-        .gpio_ce = {.number = -1, .platform_ops = GPIO_OPS, .extra = NULL},
+            .max_speed_hz = ADF4159_SPI_SPEED, 
+            .chip_select = ADF4159_SPI_CS,
+            .mode = NO_OS_SPI_MODE_0, 
+            .platform_ops = SPI_OPS, 
+            .extra = NULL
+            },
+        .gpio_le = {
+			.number = ADF4159_GPIO_LE, 
+			.platform_ops = GPIO_OPS, 
+			.extra = NULL
+			},
+        .gpio_ce = {
+			.number = -1, 
+			.platform_ops = GPIO_OPS, 
+			.extra = NULL
+			},
         .config = adf4159_default_cfg
     };
     int32_t ret = adf4159_init(pll, &p);
@@ -163,6 +175,7 @@ fail:
 
 struct adar1000_dev *cn0566_get_adar1000(struct cn0566_dev *dev, uint8_t chip)
 { return (!dev || chip >= CN0566_NUM_ADAR1000) ? NULL : dev->adar[chip]; }
+
 struct adf4159_dev *cn0566_get_adf4159(struct cn0566_dev *dev)
 { return dev ? dev->pll : NULL; }
 
