@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 """CN0566 ADAR1000 gain/phase validation using a no-OS C command server."""
-
-
+import json
 import os
 import pickle
 import subprocess
+from time import sleep
 import numpy as np
 import matplotlib.pyplot as plt
 from adi import ad9361
 from scipy import signal
 from numpy.fft import fft, fftfreq, fftshift
-import sys
-sys.path.insert(0,os.path.expanduser("~/pyadi-iio/examples/phaser"))
-from phaser_functions import spec_est
 
 SAMPLE_RATE = 30_000_000
 RX_LO = 2_200_000_000
-BUFFER_SIZE = 1024
+BUFFER_SIZE = 4096
 RX_GAIN = 0
 SIGNAL_FREQ = 10.525e9
 HB100_CAL_FILE = "hb100_freq_val.pkl"
@@ -61,7 +58,7 @@ def tone_result(x, expected_hz, search_hz=2_000_000):
     linear = np.sum(10.0 ** (dbfs[lo:hi] / 10.0))
     integrated_dbfs = 10.0 * np.log10(max(linear, 1e-20))
     return freqs[peak_index], dbfs[peak_index], integrated_dbfs
-    
+
 def rms(x):
     """Complex-signal RMS."""
     return np.sqrt(np.mean(np.abs(x) ** 2))
@@ -159,8 +156,6 @@ def normalized_signals(ch0, ch1):
     ch1_normalized = ch1 * scale
 
     return ch1_normalized, scale
-    
-
 
 class CProcess:
     def __init__(self, executable):
@@ -237,340 +232,297 @@ def connect_sdr():
     return sdr
 
 
-def capture(sdr, expected_hz, show_plot=True):
-    # Discard stale DMA data.
-    sdr.rx()
-
+def capture(sdr, expected_hz):
+    sdr.rx()  # discard stale buffer
     ch0, ch1 = sdr.rx()
-    ch0 = np.asarray(ch0, dtype=np.complex128)
-    ch1 = np.asarray(ch1, dtype=np.complex128)
+    sum_data = ch0 + ch1
 
-    # Detect the actual tone using the stronger individual channel.
-    reference_channel = ch0 if rms(ch0) >= rms(ch1) else ch1
+    # Per-channel and sum peak/RMS
+    for name, data in (("voltage0", ch0), ("voltage1", ch1), ("sum", sum_data)):
+        peak = np.max(np.abs(data))
+        rms = np.sqrt(np.mean(np.abs(data) ** 2))
+        print(f" {name}: peak={peak:.3f} RMS={rms:.3f}")
 
-    tone_hz, reference_peak_dbfs = detect_tone_frequency(
-        reference_channel,
-        expected_hz,
-        search_hz=2_000_000
-    )
+    # Per-channel and sum spectrum peaks
+    search_bw = 2_000_000
+    for name, data in (("voltage0", ch0), ("voltage1", ch1), ("sum", sum_data)):
+        dbfs, freqs = spectrum(data, SAMPLE_RATE)
+        mask = np.abs(freqs - expected_hz) <= search_bw
+        if np.any(mask):
+            indices = np.flatnonzero(mask)
+            peak_idx = indices[np.argmax(dbfs[mask])]
+        else:
+            peak_idx = np.argmax(dbfs)
+        print(f" {name}: peak frequency = {freqs[peak_idx] / 1e6:.6f} MHz "
+              f"({dbfs[peak_idx]:.1f} dBFS)")
 
-    # Raw signal combinations.
-    sum_raw = ch0 + ch1
-    diff_raw = ch0 - ch1
-
-    # Normalize RX1 amplitude to RX0 before summing.
-    ch1_normalized, normalization_scale = normalized_signals(ch0, ch1)
-    sum_normalized = ch0 + ch1_normalized
-    diff_normalized = ch0 - ch1_normalized
-
-    # Measure relative tone phase.
-    phase_deg, phasor0, phasor1 = relative_phase_deg(
-        ch0,
-        ch1,
-        tone_hz
-    )
-
-    # FFT measurements at the detected tone.
-    _, ch0_tone_dbfs = tone_dbfs_at_frequency(ch0, tone_hz)
-    _, ch1_tone_dbfs = tone_dbfs_at_frequency(ch1, tone_hz)
-    _, sum_raw_dbfs = tone_dbfs_at_frequency(sum_raw, tone_hz)
-    _, sum_norm_dbfs = tone_dbfs_at_frequency(sum_normalized, tone_hz)
-    _, diff_raw_dbfs = tone_dbfs_at_frequency(diff_raw, tone_hz)
-    _, diff_norm_dbfs = tone_dbfs_at_frequency(diff_normalized, tone_hz)
-
-    # Coherent tone amplitudes for cancellation comparison.
-    tone_ch0_db = tone_power_db(ch0, tone_hz)
-    tone_ch1_db = tone_power_db(ch1, tone_hz)
-    tone_sum_raw_db = tone_power_db(sum_raw, tone_hz)
-    tone_sum_norm_db = tone_power_db(sum_normalized, tone_hz)
-    tone_diff_norm_db = tone_power_db(diff_normalized, tone_hz)
-
-    strongest_channel_db = max(tone_ch0_db, tone_ch1_db)
-
-    raw_cancellation_db = tone_sum_raw_db - strongest_channel_db
-    normalized_cancellation_db = tone_sum_norm_db - strongest_channel_db
-
-    print("\nCapture results")
-    print("----------------")
-    print(f"Configured expected tone : {expected_hz / 1e6:+.6f} MHz")
-    print(f"Detected actual tone     : {tone_hz / 1e6:+.6f} MHz")
-    print(f"Detection difference     : "
-          f"{(tone_hz - expected_hz) / 1e3:+.1f} kHz")
-    print(f"Reference FFT peak       : {reference_peak_dbfs:.1f} dBFS")
-    print()
-
-    print(f"RX0 RMS                  : {rms(ch0):.3f}")
-    print(f"RX1 RMS                  : {rms(ch1):.3f}")
-    print(f"RX1 normalization scale  : {normalization_scale:.6f}")
-    print()
-
-    print(f"RX1 relative to RX0      : {phase_deg:+.2f} degrees")
-    print(f"RX0 tone                 : {ch0_tone_dbfs:.1f} dBFS")
-    print(f"RX1 tone                 : {ch1_tone_dbfs:.1f} dBFS")
-    print(f"Raw SUM tone             : {sum_raw_dbfs:.1f} dBFS")
-    print(f"Normalized SUM tone      : {sum_norm_dbfs:.1f} dBFS")
-    print(f"Raw DIFF tone            : {diff_raw_dbfs:.1f} dBFS")
-    print(f"Normalized DIFF tone     : {diff_norm_dbfs:.1f} dBFS")
-    print()
-
-    print(f"Raw SUM relative level   : {raw_cancellation_db:+.2f} dB")
-    print(f"Normalized SUM level     : {normalized_cancellation_db:+.2f} dB")
-
-    result = {
-        "ch0": ch0,
-        "ch1": ch1,
-        "sum_raw": sum_raw,
-        "sum_normalized": sum_normalized,
-        "diff_raw": diff_raw,
-        "diff_normalized": diff_normalized,
-        "tone_hz": tone_hz,
-        "phase_deg": phase_deg,
-        "phasor0": phasor0,
-        "phasor1": phasor1,
-        "normalization_scale": normalization_scale,
-        "sum_raw_dbfs": sum_raw_dbfs,
-        "sum_norm_dbfs": sum_norm_dbfs,
-        "diff_raw_dbfs": diff_raw_dbfs,
-        "diff_norm_dbfs": diff_norm_dbfs,
-        "raw_cancellation_db": raw_cancellation_db,
-        "normalized_cancellation_db": normalized_cancellation_db
-    }
-
-    if not show_plot:
-        return result
-
-    # Calculate spectra.
-    dbfs_ch0, freqs = spectrum(ch0, SAMPLE_RATE)
+    # Spectra for plotting
+    dbfs_ch0, freqs_plot = spectrum(ch0, SAMPLE_RATE)
     dbfs_ch1, _ = spectrum(ch1, SAMPLE_RATE)
-    dbfs_sum_raw, _ = spectrum(sum_raw, SAMPLE_RATE)
-    dbfs_sum_norm, _ = spectrum(sum_normalized, SAMPLE_RATE)
-    dbfs_diff_raw, _ = spectrum(diff_raw, SAMPLE_RATE)
+    dbfs_sum, _ = spectrum(sum_data, SAMPLE_RATE)
+    freqs_mhz = freqs_plot / 1e6
+    mask = np.abs(freqs_plot - expected_hz) <= search_bw
+    if np.any(mask):
+        indices = np.flatnonzero(mask)
+        sum_peak_idx = indices[np.argmax(dbfs_sum[mask])]
+    else:
+        sum_peak_idx = np.argmax(dbfs_sum)
+    print(f"Peak frequency found at  {freqs_mhz[sum_peak_idx]:.6f} MHz.")
 
-    freqs_mhz = freqs / 1e6
+    # Plot: time domain + per-channel spectrum + sum spectrum
+    plt.figure(figsize=(10, 9))
+    plt.subplot(3, 1, 1)
+    plt.title("Time Domain I/Q Data")
+    plt.plot(ch0.real, marker="o", ms=2, color="red", label="RX0")
+    plt.plot(ch1.real, marker="o", ms=2, color="blue", label="RX1")
+    plt.plot(sum_data.real, marker="o", ms=2, color="green", alpha=0.5, label="SUM")
+    plt.xlabel("Sample")
+    plt.ylabel("ADC output")
+    plt.legend()
 
-    # Display only a useful region around the tone.
-    plot_span_hz = 3_000_000
-    frequency_mask = np.abs(freqs - tone_hz) <= plot_span_hz
+    plt.subplot(3, 1, 2)
+    plt.title("Per-Channel Spectrum")
+    plt.plot(freqs_mhz, dbfs_ch0, ms=2, label="RX0", alpha=0.7)
+    plt.plot(freqs_mhz, dbfs_ch1, ms=2, label="RX1", alpha=0.7)
+    plt.xlabel("Frequency [MHz]")
+    plt.ylabel("dBFS")
+    plt.legend()
 
-    # Use a smaller number of samples for readable time-domain plots.
-    time_samples = min(500, len(ch0))
-    sample_axis = np.arange(time_samples)
-
-    fig = plt.figure(figsize=(14, 11))
-    grid = fig.add_gridspec(3, 2)
-
-    # --------------------------------------------------------------
-    # Plot 1: Individual channels in time domain
-    # --------------------------------------------------------------
-    ax1 = fig.add_subplot(grid[0, 0])
-    ax1.set_title("Individual RX Channels: Real Component")
-    ax1.plot(
-        sample_axis,
-        ch0.real[:time_samples],
-        color="red",
-        label="RX0"
-    )
-    ax1.plot(
-        sample_axis,
-        ch1.real[:time_samples],
-        color="blue",
-        label="RX1"
-    )
-    ax1.set_xlabel("Sample")
-    ax1.set_ylabel("ADC output")
-    ax1.grid(True, alpha=0.3)
-    ax1.legend()
-
-    # --------------------------------------------------------------
-    # Plot 2: Raw and normalized sum in time domain
-    # --------------------------------------------------------------
-    ax2 = fig.add_subplot(grid[0, 1])
-    ax2.set_title("SUM Comparison")
-    ax2.plot(
-        sample_axis,
-        sum_raw.real[:time_samples],
-        color="green",
-        label="Raw SUM"
-    )
-    ax2.plot(
-        sample_axis,
-        sum_normalized.real[:time_samples],
-        color="purple",
-        label="Normalized SUM"
-    )
-    ax2.set_xlabel("Sample")
-    ax2.set_ylabel("ADC output")
-    ax2.grid(True, alpha=0.3)
-    ax2.legend()
-
-    # --------------------------------------------------------------
-    # Plot 3: Per-channel spectrum
-    # --------------------------------------------------------------
-    ax3 = fig.add_subplot(grid[1, 0])
-    ax3.set_title("Per-Channel Spectrum")
-    ax3.plot(
-        freqs_mhz[frequency_mask],
-        dbfs_ch0[frequency_mask],
-        label=f"RX0: {ch0_tone_dbfs:.1f} dBFS"
-    )
-    ax3.plot(
-        freqs_mhz[frequency_mask],
-        dbfs_ch1[frequency_mask],
-        label=f"RX1: {ch1_tone_dbfs:.1f} dBFS"
-    )
-    ax3.axvline(
-        tone_hz / 1e6,
-        color="black",
-        linestyle="--",
-        alpha=0.5,
-        label=f"Tone: {tone_hz / 1e6:+.3f} MHz"
-    )
-    ax3.set_xlabel("Frequency [MHz]")
-    ax3.set_ylabel("dBFS")
-    ax3.grid(True, alpha=0.3)
-    ax3.legend()
-
-    # --------------------------------------------------------------
-    # Plot 4: SUM and DIFF spectrum
-    # --------------------------------------------------------------
-    ax4 = fig.add_subplot(grid[1, 1])
-    ax4.set_title("SUM and DIFF Spectrum")
-    ax4.plot(
-        freqs_mhz[frequency_mask],
-        dbfs_sum_raw[frequency_mask],
-        color="green",
-        label=f"Raw SUM: {sum_raw_dbfs:.1f} dBFS"
-    )
-    ax4.plot(
-        freqs_mhz[frequency_mask],
-        dbfs_sum_norm[frequency_mask],
-        color="purple",
-        label=f"Normalized SUM: {sum_norm_dbfs:.1f} dBFS"
-    )
-    ax4.plot(
-        freqs_mhz[frequency_mask],
-        dbfs_diff_raw[frequency_mask],
-        color="orange",
-        alpha=0.8,
-        label=f"Raw DIFF: {diff_raw_dbfs:.1f} dBFS"
-    )
-    ax4.axvline(
-        tone_hz / 1e6,
-        color="black",
-        linestyle="--",
-        alpha=0.5
-    )
-    ax4.set_xlabel("Frequency [MHz]")
-    ax4.set_ylabel("dBFS")
-    ax4.grid(True, alpha=0.3)
-    ax4.legend()
-
-    # --------------------------------------------------------------
-    # Plot 5: Tone phasor diagram
-    # --------------------------------------------------------------
-    ax5 = fig.add_subplot(grid[2, 0])
-
-    max_phasor = max(abs(phasor0), abs(phasor1), 1e-20)
-
-    p0 = phasor0 / max_phasor
-    p1 = phasor1 / max_phasor
-
-    ax5.quiver(
-        0, 0,
-        p0.real, p0.imag,
-        angles="xy",
-        scale_units="xy",
-        scale=1,
-        color="red",
-        width=0.012,
-        label="RX0"
-    )
-
-    ax5.quiver(
-        0, 0,
-        p1.real, p1.imag,
-        angles="xy",
-        scale_units="xy",
-        scale=1,
-        color="blue",
-        width=0.012,
-        label="RX1"
-    )
-
-    ax5.scatter(
-        [p0.real, p1.real],
-        [p0.imag, p1.imag],
-        color=["red", "blue"]
-    )
-
-    ax5.annotate(
-        "RX0",
-        (p0.real, p0.imag),
-        xytext=(5, 5),
-        textcoords="offset points"
-    )
-
-    ax5.annotate(
-        "RX1",
-        (p1.real, p1.imag),
-        xytext=(5, 5),
-        textcoords="offset points"
-    )
-
-    ax5.axhline(0, color="gray", linewidth=0.8)
-    ax5.axvline(0, color="gray", linewidth=0.8)
-    ax5.set_xlim(-1.2, 1.2)
-    ax5.set_ylim(-1.2, 1.2)
-    ax5.set_aspect("equal", adjustable="box")
-    ax5.set_xlabel("In-phase")
-    ax5.set_ylabel("Quadrature")
-    ax5.set_title(
-        f"Tone Phasors: RX1 Relative Phase = {phase_deg:+.1f} degrees"
-    )
-    ax5.grid(True, alpha=0.3)
-
-    # --------------------------------------------------------------
-    # Plot 6: Measurement summary
-    # --------------------------------------------------------------
-    ax6 = fig.add_subplot(grid[2, 1])
-    ax6.axis("off")
-
-    summary = (
-        "Cancellation Measurement\n"
-        "------------------------\n"
-        f"Configured frequency: {expected_hz / 1e6:+.6f} MHz\n"
-        f"Detected frequency:   {tone_hz / 1e6:+.6f} MHz\n\n"
-        f"RX0 RMS:               {rms(ch0):.3f}\n"
-        f"RX1 RMS:               {rms(ch1):.3f}\n"
-        f"RX1 scale factor:      {normalization_scale:.4f}\n\n"
-        f"Measured phase:        {phase_deg:+.2f} degrees\n"
-        f"Raw SUM tone:          {sum_raw_dbfs:.1f} dBFS\n"
-        f"Normalized SUM tone:   {sum_norm_dbfs:.1f} dBFS\n"
-        f"Normalized DIFF tone:  {diff_norm_dbfs:.1f} dBFS\n\n"
-        f"Raw SUM relative:      {raw_cancellation_db:+.2f} dB\n"
-        f"Normalized SUM:        {normalized_cancellation_db:+.2f} dB"
-    )
-
-    ax6.text(
-        0.03,
-        0.97,
-        summary,
-        transform=ax6.transAxes,
-        va="top",
-        ha="left",
-        family="monospace",
-        fontsize=11
-    )
-
-    fig.suptitle(
-        "CN0566 ADAR1000 Phase-Cancellation Validation",
-        fontsize=15
-    )
+    plt.subplot(3, 1, 3)
+    plt.title(f"Sum Spectrum peak at {freqs_mhz[sum_peak_idx]:.3f} MHz "
+              f"({dbfs_sum[sum_peak_idx]:.1f} dBFS)")
+    plt.plot(freqs_mhz, dbfs_sum, marker="o", ms=2, color="green")
+    plt.axvline(x=expected_hz / 1e6, color="r", linestyle="--", alpha=0.5,
+                label=f"expected {expected_hz / 1e6:.1f} MHz")
+    plt.xlabel("Frequency [MHz]")
+    plt.ylabel("dBFS")
+    plt.legend()
 
     plt.tight_layout()
     plt.show()
 
-    return result
+
+NUM_ELEMENTS = 8
+CAL_AVERAGES = 10
+CAL_SETTLE_S = 1.0
+CAL_FILE = "cal_data.json"
+PHASE_STEP_SIZE = 2.8125
+
+
+def element_to_chip_ch(element):
+    return element // 4, element % 4
+
+
+def wrap_phase(angle):
+    if angle > 180.0:
+        angle -= 360.0
+    return angle
+
+
+# ---------------------------------------------------------------------------
+# Channel calibration routine.
+# Must run BEFORE gain calibration.
+# ---------------------------------------------------------------------------
+
+def measure_channel_gain(hw, sdr, channel, expected_hz, averages=CAL_AVERAGES):
+    hw.command("gain_all 0")
+    chip = 1 - channel
+    for ch in range(4):
+        hw.command(f"gain {chip} {ch} 127")
+    sleep(CAL_SETTLE_S)
+
+    total = 0.0
+    for _ in range(averages):
+        sdr.rx()
+        ch0, ch1 = sdr.rx()
+        _, peak_dbfs, _ = tone_result(ch0 + ch1, expected_hz)
+        total += 10.0 ** (peak_dbfs / 20.0)
+    return total / averages
+
+
+def channel_calibration(hw, sdr, expected_hz, verbose=True):
+    levels = []
+    for channel in range(2):
+        if verbose:
+            print(f"Measuring SDR channel {channel}...")
+        level = measure_channel_gain(hw, sdr, channel, expected_hz)
+        if verbose:
+            print(f"  level = {level:.6f}")
+        levels.append(level)
+
+    ch_mismatch_db = 20.0 * np.log10(levels[0] / levels[1])
+    if verbose:
+        print(f"Channel mismatch: {ch_mismatch_db:.2f} dB")
+    if ch_mismatch_db > 0:
+        ccal = [0.0, ch_mismatch_db]
+    else:
+        ccal = [-ch_mismatch_db, 0.0]
+    return ccal
+
+
+# ---------------------------------------------------------------------------
+# Gain calibration routine.
+# ---------------------------------------------------------------------------
+
+def measure_element_gain(hw, sdr, element, expected_hz, averages=CAL_AVERAGES):
+    chip, ch = element_to_chip_ch(element)
+    hw.command("gain_all 0")
+    hw.command(f"gain {chip} {ch} 127")
+    sleep(CAL_SETTLE_S)
+
+    total = 0.0
+    for _ in range(averages):
+        sdr.rx()
+        ch0, ch1 = sdr.rx()
+        _, peak_dbfs, _ = tone_result(ch0 + ch1, expected_hz)
+        total += 10.0 ** (peak_dbfs / 20.0)
+    return total / averages
+
+
+def gain_calibration(hw, sdr, expected_hz, verbose=True):
+    element_levels = []
+    for el in range(NUM_ELEMENTS):
+        if verbose:
+            chip, ch = element_to_chip_ch(el)
+            print(f"Measuring element {el} (chip {chip} ch {ch})...")
+        level = measure_element_gain(hw, sdr, el, expected_hz)
+        if verbose:
+            print(f"  level = {level:.6f}")
+        element_levels.append(level)
+
+    gcal = [min(element_levels) / lev for lev in element_levels]
+    if verbose:
+        print("Gain calibration coefficients:")
+        for el, g in enumerate(gcal):
+            print(f"  element {el}: {g:.4f}")
+    return gcal
+
+
+# ---------------------------------------------------------------------------
+# Phase calibration routine.
+# Algorithm: for each adjacent pair, sweep the phase of the second element
+# while holding the first at 0. The null (destructive interference) occurs
+# when the two elements are 180 deg apart, so the correction is 180 minus
+# the null position.
+# ---------------------------------------------------------------------------
+
+def phase_cal_sweep(hw, sdr, ref_el, cal_el, expected_hz, gcal,
+                    averages=CAL_AVERAGES):
+    hw.command("gain_all 0")
+    ref_chip, ref_ch = element_to_chip_ch(ref_el)
+    cal_chip, cal_ch = element_to_chip_ch(cal_el)
+
+    ref_gain = int(round(127 * gcal[ref_el]))
+    cal_gain = int(round(127 * gcal[cal_el]))
+    hw.command(f"gain {ref_chip} {ref_ch} {ref_gain}")
+    hw.command(f"gain {cal_chip} {cal_ch} {cal_gain}")
+    sleep(CAL_SETTLE_S)
+
+    hw.command(f"phase {ref_chip} {ref_ch} 0")
+
+    phase_values = np.arange(-180, 180, PHASE_STEP_SIZE)
+    gains = []
+    for phase_deg in phase_values:
+        phase_cmd = int(round(phase_deg)) % 360
+        hw.command(f"phase {cal_chip} {cal_ch} {phase_cmd}")
+
+        total = 0.0
+        for _ in range(averages):
+            sdr.rx()
+            ch0, ch1 = sdr.rx()
+            _, peak_dbfs, _ = tone_result(ch0 + ch1, expected_hz)
+            total += 10.0 ** (peak_dbfs / 20.0)
+        gains.append(total / averages)
+
+    return phase_values, gains
+
+
+def phase_calibration(hw, sdr, expected_hz, gcal, verbose=True):
+    pcal = [0.0] * NUM_ELEMENTS
+    ph_deltas = [0.0] * (NUM_ELEMENTS - 1)
+
+    for cal_el in range(NUM_ELEMENTS - 1):
+        ref_el = cal_el
+        if verbose:
+            print(f"Phase cal: element {ref_el} vs {cal_el + 1}...")
+
+        phase_values, gains = phase_cal_sweep(
+            hw, sdr, ref_el, cal_el + 1, expected_hz, gcal)
+
+        null_idx = int(np.argmin(gains))
+        null_phase = phase_values[null_idx]
+        ph_delta = wrap_phase((180.0 - null_phase) % 360.0)
+
+        if verbose:
+            print(f"  null at {null_phase:.1f} deg, correction = {ph_delta:.1f} deg")
+
+        ph_deltas[cal_el] = ph_delta
+        pcal[cal_el + 1] = wrap_phase((pcal[cal_el] - ph_delta) % 360.0)
+
+    if verbose:
+        print("Phase calibration offsets:")
+        for el, p in enumerate(pcal):
+            print(f"  element {el}: {p:.1f} deg")
+    return pcal, ph_deltas
+
+
+# ---------------------------------------------------------------------------
+# Apply calibration and save/load
+# ---------------------------------------------------------------------------
+
+def apply_gain_cal(hw, gcal, base_gain=127):
+    for el in range(NUM_ELEMENTS):
+        chip, ch = element_to_chip_ch(el)
+        calibrated = int(round(base_gain * gcal[el]))
+        calibrated = max(0, min(127, calibrated))
+        hw.command(f"gain {chip} {ch} {calibrated}")
+
+
+def apply_phase_cal(hw, pcal):
+    for el in range(NUM_ELEMENTS):
+        chip, ch = element_to_chip_ch(el)
+        phase_cmd = int(round(pcal[el])) % 360
+        hw.command(f"phase {chip} {ch} {phase_cmd}")
+
+
+def apply_calibration(hw, cal):
+    if "gcal" in cal:
+        apply_gain_cal(hw, cal["gcal"])
+    if "pcal" in cal:
+        apply_phase_cal(hw, cal["pcal"])
+
+
+def save_calibration(gcal, pcal=None, ccal=None, filename=CAL_FILE):
+    data = {"gcal": gcal}
+    if pcal is not None:
+        data["pcal"] = pcal
+    if ccal is not None:
+        data["ccal"] = ccal
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"Calibration saved to {filename}")
+
+
+def load_calibration(filename=CAL_FILE):
+    with open(filename) as f:
+        return json.load(f)
+
+
+def run_full_calibration(hw, sdr, expected_hz, verbose=True):
+    print("=== Channel calibration ===")
+    ccal = channel_calibration(hw, sdr, expected_hz, verbose)
+
+    print("\n=== Gain calibration ===")
+    gcal = gain_calibration(hw, sdr, expected_hz, verbose)
+    apply_gain_cal(hw, gcal)
+
+    print("\n=== Phase calibration ===")
+    pcal, _ = phase_calibration(hw, sdr, expected_hz, gcal, verbose)
+    apply_phase_cal(hw, pcal)
+
+    save_calibration(gcal, pcal, ccal)
+    print("\nCalibration complete. All corrections applied.")
+
 
 HELP = """Commands:
   gain <chip> <ch> <0-127>   set one ADAR1000 channel gain
@@ -578,12 +530,12 @@ HELP = """Commands:
   gain_all <0-127>           set all eight gains
   phase <chip> <ch> <0-359> set one phase
   phase_all <0-359>          set all phases
-  phase_chip <chip> <0-359>   set all phase for one ADAR1000 
   verify <chip>              dump/verify ADAR1000 RX registers
   pll <hz> | pll_full <hz>   tune ADF4159
   lock | gpios | dump        diagnostics
   capture                    capture and analyze RX0/RX1 separately
   isolate                    print one-channel isolation test commands
+  cal                        run full calibration (gain + phase), save results
   quit
 """
 
@@ -593,12 +545,20 @@ def main():
     sdr = connect_sdr()
     signal_freq = load_signal_freq(require_cal=True)
     offset = 1_000_000
-    pll_freq = int((signal_freq + RX_LO - offset) // 4)
+    pll_freq = int((signal_freq + RX_LO - offset) / 4)
     for line in hw.command(f"pll_full {pll_freq}"):
         print("[hw]", line)
     for line in hw.command("lock"):
         print("[hw]", line)
     expected_hz = -offset
+
+    if os.path.isfile(CAL_FILE):
+        cal = load_calibration()
+        apply_calibration(hw, cal)
+        print(f"Loaded calibration from {CAL_FILE}")
+    else:
+        print("No calibration file found. Run 'cal' to calibrate.")
+
     print(HELP)
 
     try:
@@ -617,6 +577,8 @@ def main():
                 for chip in range(2):
                     for ch in range(4):
                         print(f"  gain_all 0; gain {chip} {ch} 127; capture")
+            elif cmd == "cal":
+                run_full_calibration(hw, sdr, expected_hz)
             else:
                 for line in hw.command(cmd):
                     print("[hw]", line)
