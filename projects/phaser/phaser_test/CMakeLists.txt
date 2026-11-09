@@ -33,6 +33,7 @@ set(NO_OS_SOURCES
 add_executable(phaser_test
     main.c
     cn0566/cn0566_control.c
+    cn0566/cn0566_calibration.c
     capture/iio_capture.c
     analysis/genalyzer_analysis.c  
     ${NO_OS_SOURCES}
